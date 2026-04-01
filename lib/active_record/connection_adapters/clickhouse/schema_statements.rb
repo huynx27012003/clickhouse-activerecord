@@ -157,7 +157,21 @@ module ActiveRecord
 
         def table_options(table)
           sql = show_create_table(table)
-          { options: sql.gsub(/^(?:.*?)(?:ENGINE = (.*?))?( AS SELECT .*?)?$/, '\\1').presence, as: sql.match(/^CREATE (?:.*?) AS (SELECT .*?)$/).try(:[], 1) }.compact
+
+          as     = sql[/^CREATE .*? AS (SELECT .*?)$/m, 1]
+          engine = sql[/ENGINE = (.*?)(?: AS SELECT .*?)?$/m, 1]
+
+          return { as: }.compact unless engine.present?
+
+          engine, settings = extract_clause(engine, :settings)
+          engine, ttl      = extract_clause(engine, :ttl)
+
+          {
+            options: engine.presence,
+            ttl:,
+            settings:,
+            as:,
+          }.compact
         end
 
         # Not indexes on clickhouse
@@ -288,6 +302,18 @@ module ActiveRecord
 
         def has_default_function?(default) # :nodoc:
           (%r{\w+\(.*\)} === default)
+        end
+
+        def extract_clause(source, clause)
+          pattern = /\s+#{clause.to_s.upcase}\s+(.+)$/im
+          match   = source.match(pattern)
+
+          return [source, nil] unless match.present?
+
+          [
+            source[0...match.begin(0)],
+            match[1].strip,
+          ]
         end
 
         def raw_execute(sql, settings: {}, except_params: [])

@@ -1,17 +1,25 @@
 # Clickhouse::Activerecord
 
 A Ruby database ActiveRecord driver for ClickHouse. Support Rails >= 7.1.
+Support ClickHouse version from 22.0 LTS (Testing on 24.6).
 
 ## Installation
+
+Add this line to your application's Gemfile:
 
 ```ruby
 gem 'clickhouse-activerecord'
 ```
 
+And then execute:
+
     $ bundle
 
-## Connection Parameters
+Or install it yourself as:
 
+    $ gem install clickhouse-activerecord
+    
+## Available database connection parameters
 ```yml
 default: &default
   adapter: clickhouse
@@ -20,78 +28,388 @@ default: &default
   port: 8123
   username: username
   password: password
-  http_auth: query_params # optional: query_params, basic, x_clickhouse_headers
-  ssl: true
-  debug: true
-  migrations_paths: db/clickhouse
-  cluster_name: 'cluster_name'
-  replica_name: '{replica}'
-  read_timeout: 300
+  http_auth: query_params # optional, supports query_params, basic, x_clickhouse_headers
+  ssl: true # optional for using ssl connection
+  debug: true # use for showing in to log technical information
+  migrations_paths: db/clickhouse # optional, default: db/migrate_clickhouse
+  cluster_name: 'cluster_name' # optional for creating tables in cluster 
+  replica_name: '{replica}' # replica macros name, optional for creating replicated tables
+  read_timeout: 300 # change network timeouts, by default 60 seconds
   write_timeout: 300
   keep_alive_timeout: 300
 ```
 
+Alternatively if you wish to pass a custom `Net::HTTP` transport (or any other
+object which supports a `.post()` function with the same parameters as
+`Net::HTTP`'s), you can do this directly instead of specifying
+`host`/`port`/`ssl`:
+
+```ruby
+class ActionView < ActiveRecord::Base
+  establish_connection(
+    adapter: 'clickhouse',
+    database: 'database',
+    connection: Net::HTTP.start('http://example.org', 8123)
+  )
+end
+```
+
+### HTTP authentication mode
+
+By default, the adapter sends `user` and `password` as URL parameters.
+You can set `http_auth` explicitly (or omit it and keep the same default behavior):
+
+```yml
+clickhouse:
+  adapter: clickhouse
+  host: localhost
+  port: 8123
+  database: my_db
+  username: app_user
+  password: secret
+  http_auth: x_clickhouse_headers # or basic / query_params
+```
+
+- Use YAML string values: `http_auth: query_params`, `http_auth: basic`, or `http_auth: x_clickhouse_headers`.
+- Both strings and Ruby symbols are accepted internally.
+- `http_auth: x_clickhouse_headers` sends `X-ClickHouse-User`, `X-ClickHouse-Key`, and `X-ClickHouse-Database` headers.
+- `http_auth: basic` sends `Authorization: Basic ...` and keeps `database` in URL params.
+- `http_auth: query_params` sends `user`, `password`, and `database` in URL params (same as omitting `http_auth`).
+
 ## Usage in Rails
+
+Add your `database.yml` connection information with postfix `_clickhouse` for you environment:
+
+```yml
+development:
+  adapter: clickhouse
+  database: database
+```
+
+Your model example:
 
 ```ruby
 class Action < ActiveRecord::Base
 end
 ```
 
-Materialized view:
+For materialized view model add:
 ```ruby
 class ActionView < ActiveRecord::Base
   self.is_view = true
 end
 ```
 
-Second database:
+## Usage in Rails with second database
+
+Add your `database.yml` connection information for you environment:
+
+```yml
+development:
+  primary:
+    ...
+    
+  clickhouse:
+    adapter: clickhouse
+    database: database
+```
+
+Connection [Multiple Databases with Active Record](https://guides.rubyonrails.org/active_record_multiple_databases.html) or short example:
+
 ```ruby
 class Action < ActiveRecord::Base
   establish_connection :clickhouse
 end
 ```
 
-## Rake Tasks
+### Rake tasks
 
-```
-$ rake db:create
-$ rake db:drop
-$ rake db:purge
-$ rake db:reset
-$ rake db:migrate
-$ rake db:rollback
-$ rails g clickhouse_migration MIGRATION_NAME COLUMNS
-```
+Create / drop / purge / reset database:
+ 
+    $ rake db:create
+    $ rake db:drop
+    $ rake db:purge
+    $ rake db:reset
 
-Multiple databases:
-```
-$ rake db:create:clickhouse
-$ rake db:schema:dump:clickhouse
-$ rake db:schema:load:clickhouse
-$ rake clickhouse:schema:dump -- --simple
-$ rake clickhouse:structure:dump
-$ rake clickhouse:structure:load
-```
+Or with multiple databases:
 
-## Testing
+    $ rake db:create:clickhouse
+    $ rake db:drop:clickhouse
+    $ rake db:purge:clickhouse
+    $ rake db:reset:clickhouse
+    
+Migration:
 
-RSpec:
+    $ rails g clickhouse_migration MIGRATION_NAME COLUMNS
+    $ rake db:migrate
+    $ rake db:rollback
+
+### Dump / Load for multiple using databases
+
+If you using multiple databases, for example: PostgreSQL, Clickhouse.
+
+Schema dump to `db/clickhouse_schema.rb` file:
+
+    $ rake db:schema:dump:clickhouse
+    
+Schema load from `db/clickhouse_schema.rb` file:
+
+    $ rake db:schema:load:clickhouse
+
+For export schema to PostgreSQL, you need use:
+
+    $ rake clickhouse:schema:dump -- --simple
+
+Schema will be dump to `db/clickhouse_schema_simple.rb`. If default file exists, it will be auto update after migration.
+    
+Structure dump to `db/clickhouse_structure.sql` file:
+
+    $ rake clickhouse:structure:dump
+    
+Structure load from `db/clickhouse_structure.sql` file:
+
+    $ rake clickhouse:structure:load
+
+### Dump / Load for only Clickhouse database using
+
+    $ rake db:schema:dump  
+    $ rake db:schema:load  
+    $ rake db:structure:dump  
+    $ rake db:structure:load
+
+### RSpec
+
+For auto truncate tables before each test add to `spec/rails_helper.rb` file:
+
 ```ruby
 require 'clickhouse-activerecord/rspec'
 ```
 
-Minitest:
+### Minitest
+
+For auto truncate tables before each test add to `test/test_helper.rb` file:
+
 ```ruby
 require 'clickhouse-activerecord/minitest'
 ```
 
-## Local Development
+### Insert and select data
+
+```ruby
+Action.where(url: 'http://example.com', date: Date.current).where.not(name: nil).order(created_at: :desc).limit(10)
+# Clickhouse Action Load (10.3ms)  SELECT actions.* FROM actions WHERE actions.date = '2017-11-29' AND actions.url = 'http://example.com' AND (actions.name IS NOT NULL)  ORDER BY actions.created_at DESC LIMIT 10
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+Action.create(url: 'http://example.com', date: Date.yesterday)
+# Clickhouse Action Load (10.8ms)  INSERT INTO actions (url, date) VALUES ('http://example.com', '2017-11-28')
+#=> true
+ 
+ActionView.maximum(:date)
+# Clickhouse (10.3ms)  SELECT maxMerge(actions.date) FROM actions
+#=> 'Wed, 29 Nov 2017'
+
+Action.where(date: Date.current).final.limit(10)
+# Clickhouse Action Load (10.3ms)  SELECT actions.* FROM actions FINAL WHERE actions.date = '2017-11-29' LIMIT 10
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+Action.settings(optimize_read_in_order: 1).where(date: Date.current).limit(10)
+# Clickhouse Action Load (10.3ms)  SELECT actions.* FROM actions FINAL WHERE actions.date = '2017-11-29' LIMIT 10 SETTINGS optimize_read_in_order = 1
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+User.joins(:actions).using(:group_id)
+# Clickhouse User Load (10.3ms)  SELECT users.* FROM users INNER JOIN actions USING group_id
+#=> #<ActiveRecord::Relation [#<User *** >]>
+
+User.window('x', order: 'date', partition: 'name', rows: 'UNBOUNDED PRECEDING').select('sum(value) OVER x')
+# SELECT sum(value) OVER x FROM users WINDOW x AS (PARTITION BY name ORDER BY date ROWS UNBOUNDED PRECEDING)
+#=> #<ActiveRecord::Relation [#<User *** >]>
+```
+
+### CTE and CSE examples
+
+For activation CSE ([Common Scalar Expressions](https://clickhouse.com/docs/sql-reference/statements/select/with#common-scalar-expressions)) in ClickHouse `value` in hash must be a `Symbol` class.
+`key` in a hash must be converting to:
+
+* `String` -> quoted string
+* `Symbol` -> raw data
+* `Relation` -> sql query
+
+See in examples:
+
+```ruby
+# CTE
+Action.with(t: ActionView.where(event_name: 'test')).where(event_name: Action.from('t').select('event_name'))
+# Clickhouse (10.3ms)  WITH t AS (SELECT action_view.* FROM action_view WHERE action_view.event_name = \'test\') SELECT actions.* FROM actions WHERE actions.event_name IN (SELECT event_name FROM t)
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+# CSE with string key
+Action.with('2026-01-01 15:23:00' => :t).where(Arel.sql('date = toDate(t)'))
+# Clickhouse (10.3ms)  WITH '2026-01-01 15:23:00' AS t SELECT actions.* FROM actions WHERE (date = toDate(t))
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+# CSE with symbol key
+Action.with('(id, extension) -> concat(lower(id), extension)': :t).where(Arel.sql('date = toDate(t)'))
+# Clickhouse (10.3ms)  WITH (id, extension) -> concat(lower(id), extension) AS t SELECT actions.* FROM actions WHERE (date = toDate(t))
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+
+# CSE with ActiveRecord relation key
+Action.with(ActionView.select(Arel.sql('min(date)')) => :min_date).where(Arel.sql('date = min_date'))
+# Clickhouse (10.3ms)  WITH (SELECT min(date) FROM action_view) AS min_date SELECT actions.* FROM actions WHERE (date = min_date)
+#=> #<ActiveRecord::Relation [#<Action *** >]>
+```
+
+### Streaming request
+
+```ruby
+path = Action.connection.execute_to_file(Action.where(date: Date.current), format: 'CSVWithNames')
+# Clickhouse Stream (10.3ms)  SELECT actions.* FROM actions WHERE actions.date = '2017-11-29'
+file = File.open(path)
+```
+
+
+### Migration Data Types
+
+Integer types are unsigned by default. Specify signed values with `:unsigned =>
+false`. The default integer is `UInt32`
+
+| Type (bit size) |                    Range                     | :limit (byte size) |
+|:----------------|:--------------------------------------------:|-------------------:|
+| Int8            |                 -128 to 127                  |                  1 | 
+| Int16           |               -32768 to 32767                |                  2 |
+| Int32           |         -2147483648 to 2,147,483,647         |                3,4 |
+| Int64           | -9223372036854775808 to 9223372036854775807] |            5,6,7,8 |
+| Int128          |                     ...                      |             9 - 15 |
+| Int256          |                     ...                      |                16+ |
+| UInt8           |                   0 to 255                   |                  1 |
+| UInt16          |                 0 to 65,535                  |                  2 |
+| UInt32          |              0 to 4,294,967,295              |                3,4 |
+| UInt64          |          0 to 18446744073709551615           |            5,6,7,8 |
+| UInt256         |                   0 to ...                   |                 8+ |
+| Array           |                     ...                      |                ... |
+| Map             |                     ...                      |                ... |
+
+Example:
+
+```ruby
+class CreateDataItems < ActiveRecord::Migration[7.1]
+  def change
+    create_table "data_items", id: false, options: "VersionedCollapsingMergeTree(sign, version) PARTITION BY toYYYYMM(day) ORDER BY category", force: :cascade do |t|
+      t.date "day", null: false
+      t.string "category", null: false
+      t.integer "value_in", null: false
+      t.integer "sign", limit: 1, unsigned: false, default: -> { "CAST(1, 'Int8')" }, null: false
+      t.integer "version", limit: 8, default: -> { "CAST(toUnixTimestamp(now()), 'UInt64')" }, null: false
+    end
+    
+    create_table "with_index", id: false, options: 'MergeTree PARTITION BY toYYYYMM(date) ORDER BY (date)' do |t|
+      t.integer :int1, null: false
+      t.integer :int2, null: false
+      t.date :date, null: false
+
+      t.index '(int1 * int2, date)', name: 'idx', type: 'minmax', granularity: 3
+    end
+    
+    remove_index :some, 'idx'
+    
+    add_index :some, 'int1 * int2', name: 'idx2', type: 'set(10)', granularity: 4
+  end
+end
+```
+
+Create table with custom column structure and codec compression:
+
+```ruby
+class CreateDataItems < ActiveRecord::Migration[7.1]
+  def change
+    create_table "data_items", id: false, options: "MergeTree PARTITION BY toYYYYMM(timestamp) ORDER BY timestamp", force: :cascade do |t|
+      t.integer :user_id, limit: 8, codec: 'DoubleDelta, LZ4'
+      t.column "timestamp", "DateTime('UTC') CODEC(DoubleDelta, LZ4)"
+    end
+  end
+end
+```
+
+Create Buffer table with connection database name:
+
+```ruby
+class CreateDataItems < ActiveRecord::Migration[7.1]
+  def change
+    create_table :some_buffers, as: :some, options: "Buffer(#{connection.database}, some, 1, 10, 60, 100, 10000, 10000000, 100000000)"
+  end
+end
+```
+
+
+### Using replica and cluster params in connection parameters
+
+```yml
+default: &default
+  ***
+  cluster_name: 'cluster_name'
+  replica_name: '{replica}'
+```
+
+`ON CLUSTER cluster_name` will be attach to all queries create / drop.
+
+Engines `MergeTree` and all support replication engines will be replaced to `Replicated***('/clickhouse/tables/cluster_name/database.table', '{replica}')`
+
+## Donations
+
+Donations to this project are going directly to [PNixx](https://github.com/PNixx), the original author of this project:
+
+* BTC address: `bc1qr73vls0kv2ujk4ugqmpqj6j0qtqvdr3nx25xdl`
+* ETH address: `0x6F094365A70fe7836A633d2eE80A1FA9758234d5`
+* XMR address: `42gP71qLB5M43RuDnrQ3vSJFFxis9Kw9VMURhpx9NLQRRwNvaZRjm2TFojAMC8Fk1BQhZNKyWhoyJSn5Ak9kppgZPjE17Zh`
+* TON address: `UQBCnxOfBsHPZ3PesGgMedVMEf5UHnm0jrSq-042pMWw08Ux`
+
+## Development
+
+After checking out the repo, run `bin/setup` to install dependencies. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+
+### Run locally
+
+1. Start ClickHouse (single node):
 
 ```bash
 docker compose -f .docker/docker-compose.yml up -d
-bin/test-single
-
-docker compose -f .docker/docker-compose.cluster.yml up -d
-CLICKHOUSE_PORT=28123 CLICKHOUSE_CLUSTER=test_cluster bin/test-single
 ```
+
+2. Run single-node specs:
+
+```bash
+bin/test-single
+```
+
+If your local workflow expects `bin/single_test`, use the same command format as `bin/test-single`:
+
+```bash
+CLICKHOUSE_PORT=18123 CLICKHOUSE_DATABASE=default bundle exec rspec spec/single --format progress
+```
+
+3. Start ClickHouse cluster:
+
+```bash
+docker compose -f .docker/docker-compose.cluster.yml up -d
+```
+
+4. Run cluster specs:
+
+```bash
+CLICKHOUSE_PORT=28123 CLICKHOUSE_DATABASE=default CLICKHOUSE_CLUSTER=test_cluster bundle exec rspec spec/cluster --format progress
+```
+
+To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and tags, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+
+Testing github actions:
+
+```bash
+act
+```
+
+## Contributing
+
+Bug reports and pull requests are welcome on GitHub at [https://github.com/pnixx/clickhouse-activerecord](https://github.com/pnixx/clickhouse-activerecord). This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [Contributor Covenant](http://contributor-covenant.org) code of conduct.
+
+## License
+
+The gem is available as open source under the terms of the [MIT License](http://opensource.org/licenses/MIT).
